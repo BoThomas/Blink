@@ -4,6 +4,7 @@ import SwiftUI
 @Observable
 final class AppState {
     var servers: [DevServer] = []
+    var ignoredServers: [DevServer] = []
     var simulators: [Simulator] = []
     private var isScanning = false
     var isInitialLoad = true
@@ -15,6 +16,8 @@ final class AppState {
 
     private static let pollingInterval: TimeInterval = 3.0
 
+    private static let ignoredKeysKey = "ignoredServerKeys"
+
     private var timer: Timer?
     private var killedPIDs: Set<Int> = []
 
@@ -22,6 +25,10 @@ final class AppState {
     // would otherwise stay suppressed forever.
     private var killedPorts: [Int: Int] = [:]
     private var killedSimUDIDs: Set<String> = []
+
+    // Server identity keys hidden from the active list and every count, even
+    // while their processes run. Persisted across launches.
+    private var ignoredKeys: Set<String> = []
 
     private var relaunched: [Int: RelaunchedServer] = [:]
 
@@ -50,6 +57,9 @@ final class AppState {
     // MARK: - Lifecycle
 
     init() {
+        ignoredKeys = Set(
+            UserDefaults.standard.stringArray(forKey: Self.ignoredKeysKey) ?? []
+        )
         startPolling()
     }
 
@@ -91,11 +101,19 @@ final class AppState {
         }
         let filteredSims = newSims.filter { !killedSimUDIDs.contains($0.id) }
 
-        clearStaleFailures(among: filteredServers)
-        let mergedServers = preservingRestartingRows(filteredServers)
+        // Ignored servers never reach the active list or the counts, even
+        // while they run; they surface in the collapsed ignored section.
+        let activeServers = filteredServers.filter { !ignoredKeys.contains($0.ignoreKey) }
+        let runningIgnored = filteredServers.filter { ignoredKeys.contains($0.ignoreKey) }
+
+        clearStaleFailures(among: activeServers)
+        let mergedServers = preservingRestartingRows(activeServers)
 
         if servers != mergedServers {
             servers = mergedServers
+        }
+        if ignoredServers != runningIgnored {
+            ignoredServers = runningIgnored
         }
         if simulators != filteredSims {
             simulators = filteredSims
@@ -165,6 +183,40 @@ final class AppState {
         withAnimation(.easeOut(duration: 0.3)) {
             servers.removeAll { $0.port == server.port }
         }
+    }
+
+    // MARK: - Ignoring
+
+    func ignoreServer(_ server: DevServer) {
+        ignoredKeys.insert(server.ignoreKey)
+        saveIgnoredKeys()
+        restartStates[server.port] = nil
+        withAnimation(.easeOut(duration: 0.3)) {
+            servers.removeAll { $0.id == server.id }
+            ignoredServers.append(server)
+            ignoredServers.sort { $0.port < $1.port }
+        }
+    }
+
+    func unignoreServer(_ server: DevServer) {
+        ignoredKeys.remove(server.ignoreKey)
+        saveIgnoredKeys()
+        withAnimation(.easeOut(duration: 0.3)) {
+            ignoredServers.removeAll { $0.id == server.id }
+            // Still running? Bring it straight back instead of waiting for
+            // the next poll to rediscover it.
+            if !servers.contains(where: { $0.id == server.id }) {
+                servers.append(server)
+                servers.sort { $0.port < $1.port }
+            }
+        }
+    }
+
+    private func saveIgnoredKeys() {
+        UserDefaults.standard.set(
+            ignoredKeys.sorted(),
+            forKey: Self.ignoredKeysKey
+        )
     }
 
     func restartApp(in simulator: Simulator) {

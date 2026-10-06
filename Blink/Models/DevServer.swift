@@ -15,6 +15,12 @@ struct DevServer: Identifiable, Hashable {
     var localhostURL: URL? {
         URL(string: "http://localhost:\(port)")
     }
+
+    // Ignoring survives restarts and port changes, so the key is the project
+    // directory; the port stands in when no working directory was resolved.
+    var ignoreKey: String {
+        projectPath.isEmpty ? "port:\(port)" : projectPath
+    }
 }
 
 // MARK: - Framework

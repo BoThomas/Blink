@@ -6,6 +6,7 @@ struct MenuBarView: View {
     @Environment(AppState.self) private var appState
 
     @State private var page: Page = .main
+    @State private var showsIgnoredServers = false
 
     enum Page {
         case main, settings, about
@@ -76,13 +77,15 @@ private extension MenuBarView {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.opacity)
-        } else if appState.servers.isEmpty && appState.simulators.isEmpty {
+        } else if appState.servers.isEmpty
+                    && appState.simulators.isEmpty
+                    && appState.ignoredServers.isEmpty {
             EmptyStateView()
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
         } else {
             ScrollView {
                 VStack(spacing: 12) {
-                    if !appState.servers.isEmpty {
+                    if !appState.servers.isEmpty || !appState.ignoredServers.isEmpty {
                         serverSection
                     }
                     if !appState.simulators.isEmpty {
@@ -122,6 +125,54 @@ private extension MenuBarView {
                         insertion: .move(edge: .top).combined(with: .opacity),
                         removal: .move(edge: .trailing).combined(with: .opacity)
                     ))
+            }
+
+            if !appState.ignoredServers.isEmpty {
+                ignoredSection
+            }
+        }
+    }
+
+    // Collapsed by default; holds the servers that are ignored while running.
+    @ViewBuilder
+    var ignoredSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showsIgnoredServers.toggle()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: showsIgnoredServers ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .frame(width: 12)
+                        .foregroundStyle(.secondary.opacity(0.6))
+
+                    Text("IGNORED")
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(0.8)
+                        .foregroundStyle(.secondary.opacity(0.6))
+
+                    Text("\(appState.ignoredServers.count)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary.opacity(0.6))
+
+                    Spacer()
+                }
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showsIgnoredServers {
+                ForEach(appState.ignoredServers) { server in
+                    IgnoredServerRowView(server: server)
+                        .padding(.leading, 16)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .top).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        ))
+                }
             }
         }
     }

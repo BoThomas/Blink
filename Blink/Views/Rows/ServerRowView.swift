@@ -92,6 +92,10 @@ private extension ServerRowView {
 
     var actions: some View {
         HStack(spacing: RowAction.spacing) {
+            RowAction(symbol: "eye.slash", help: "Ignore server") {
+                appState.ignoreServer(server)
+            }
+
             RowAction(symbol: "arrow.clockwise", help: "Restart server") {
                 appState.restartServer(server)
             }
