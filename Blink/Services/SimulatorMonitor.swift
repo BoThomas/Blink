@@ -131,6 +131,14 @@ private extension SimulatorMonitor {
     }
 
     static func resolveAppName(udid: String, bundleID: String) async -> String? {
+        // Display names are static per bundle, so each one is read from disk
+        // only once. get_app_container is a full simctl invocation — the
+        // priciest call in the polling loop — and would otherwise run for
+        // every booted simulator on every poll.
+        if let cached = await nameCache.name(for: bundleID) {
+            return cached
+        }
+
         guard let containerPath = await Shell.run(
             "/usr/bin/xcrun",
             arguments: ["simctl", "get_app_container", udid, bundleID, "app"]
@@ -147,7 +155,28 @@ private extension SimulatorMonitor {
             return nil
         }
 
-        return (plist["CFBundleDisplayName"] as? String)
+        let name = (plist["CFBundleDisplayName"] as? String)
             ?? (plist["CFBundleName"] as? String)
+
+        if let name {
+            await nameCache.store(name, for: bundleID)
+        }
+
+        return name
+    }
+
+    // Written from concurrent per-device tasks, hence the actor.
+    private static let nameCache = AppNameCache()
+}
+
+private actor AppNameCache {
+    private var names: [String: String] = [:]
+
+    func name(for bundleID: String) -> String? {
+        names[bundleID]
+    }
+
+    func store(_ name: String, for bundleID: String) {
+        names[bundleID] = name
     }
 }

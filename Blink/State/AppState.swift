@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 
+@MainActor
 @Observable
 final class AppState {
     var servers: [DevServer] = []
@@ -14,12 +15,25 @@ final class AppState {
 
     var simulatorRestartStates: [String: RestartState] = [:]
 
-    private static let pollingInterval: TimeInterval = 3.0
+    // The panel is the only place where live numbers matter, so it polls fast
+    // while open and idles slowly while closed — the menu bar icon only needs
+    // to know whether anything runs at all, not every second.
+    private static let activePollingInterval: TimeInterval = 2.0
+    private static let idlePollingInterval: TimeInterval = 10.0
 
     private static let ignoredKeysKey = "ignoredServerKeys"
 
     private var timer: Timer?
     private var killedPIDs: Set<Int> = []
+
+    // Whether the panel is on screen; drives the polling cadence. Must be set
+    // on the main thread.
+    private var isPanelVisible = false
+
+    // Resolved dev servers by PID. A running process's args and cwd never
+    // change, so each PID is resolved once and reused on every later poll
+    // instead of spawning ps + lsof per server every cycle.
+    private var serverCache: [Int: DevServer] = [:]
 
     // Keyed by the killed PID, not the port: a port that never falls silent
     // would otherwise stay suppressed forever.
@@ -63,19 +77,42 @@ final class AppState {
         startPolling()
     }
 
-    deinit {
-        timer?.invalidate()
-    }
-
     // MARK: - Polling
 
     func startPolling() {
         Task { await refresh() }
+        scheduleNextPoll()
+    }
 
-        timer = Timer.scheduledTimer(withTimeInterval: Self.pollingInterval, repeats: true) { [weak self] _ in
-            guard let self else { return }
+    /// Called from the main thread when the panel opens or closes. Re-schedules
+    /// the poll timer for the matching cadence; opening also refreshes
+    /// immediately so the numbers are never stale on reveal.
+    func setPanelVisible(_ visible: Bool) {
+        guard isPanelVisible != visible else { return }
+        isPanelVisible = visible
+        scheduleNextPoll()
+        if visible { Task { await refresh() } }
+    }
+
+    private func scheduleNextPoll() {
+        timer?.invalidate()
+
+        let interval = isPanelVisible ? Self.activePollingInterval : Self.idlePollingInterval
+        let newTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] firingTimer in
+            // AppState lives for the whole app, so this is a formality — but
+            // if it ever went away, the run loop would keep this timer firing
+            // forever. A deinit can't invalidate it (deinit is nonisolated),
+            // so the timer retires itself instead.
+            guard let self else {
+                firingTimer.invalidate()
+                return
+            }
             Task { await self.refresh() }
         }
+        // Let the system coalesce fires with other timers; firing to the
+        // millisecond buys nothing for a status readout.
+        newTimer.tolerance = interval / 4
+        timer = newTimer
     }
 
     func refresh() async {
@@ -138,6 +175,25 @@ final class AppState {
         if lastEvent != newEvent {
             lastEvent = newEvent
         }
+    }
+
+    // MARK: - Scanning
+
+    func scanServers() async -> [DevServer] {
+        let devPorts = ServerScanner.devPorts(from: await PortScanner.scan())
+
+        // A dead PID never comes back, so the cache can be pruned every scan.
+        let activePIDs = Set(devPorts.map(\.pid))
+        serverCache = serverCache.filter { activePIDs.contains($0.key) }
+
+        // Only new PIDs (or a PID that switched ports) pay for resolution;
+        // everything else reuses its already-resolved metadata.
+        let unresolved = devPorts.filter { serverCache[$0.pid]?.port != $0.port }
+        for server in await ServerScanner.resolve(ports: unresolved) {
+            serverCache[server.pid] = server
+        }
+
+        return devPorts.compactMap { serverCache[$0.pid] }.sorted { $0.port < $1.port }
     }
 
     private var hasRestartInFlight: Bool {
@@ -238,11 +294,9 @@ final class AppState {
     }
 
     private func finishSimulatorRestart(udid: String, failure: String?) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.25)) {
-                self.simulatorRestartStates[udid] = failure.map { .failed($0) }
-                if failure != nil { self.lastEvent = .failed }
-            }
+        withAnimation(.easeOut(duration: 0.25)) {
+            self.simulatorRestartStates[udid] = failure.map { .failed($0) }
+            if failure != nil { self.lastEvent = .failed }
         }
     }
 
@@ -292,14 +346,16 @@ final class AppState {
     private func cascadeRemoval(count: Int, removeFirst: @escaping () -> Void) {
         let stagger = 0.1
 
-        for index in 0..<count {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * stagger) {
+        Task {
+            for index in 0..<count {
+                if index > 0 {
+                    try? await Task.sleep(for: .seconds(stagger))
+                }
                 withAnimation(.easeOut(duration: 0.25)) { removeFirst() }
             }
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double(count) * stagger + 0.3) {
-            self.lastEvent = self.totalCount > 0 ? .active : .idle
+            try? await Task.sleep(for: .seconds(0.3))
+            self.lastEvent = totalCount > 0 ? .active : .idle
         }
     }
 
@@ -404,14 +460,12 @@ final class AppState {
     }
 
     private func finishRestart(port: Int, failure: String?) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.25)) {
-                if let failure {
-                    self.restartStates[port] = .failed(failure)
-                    self.lastEvent = .failed
-                } else {
-                    self.restartStates[port] = nil
-                }
+        withAnimation(.easeOut(duration: 0.25)) {
+            if let failure {
+                self.restartStates[port] = .failed(failure)
+                self.lastEvent = .failed
+            } else {
+                self.restartStates[port] = nil
             }
         }
     }

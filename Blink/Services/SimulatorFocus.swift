@@ -11,6 +11,7 @@ enum Accessibility {
     }
 }
 
+@MainActor
 extension AppState {
     func focusSimulator(_ simulator: Simulator) {
         let trusted = AXIsProcessTrustedWithOptions(

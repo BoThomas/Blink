@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
@@ -68,6 +69,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button,
               let buttonWindow = button.window else { return }
 
+        appState.setPanelVisible(true)
+
         let buttonFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         let panelWidth = MenuBarView.panelSize.width
         var x = buttonFrame.minX
@@ -116,13 +119,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func closePanel() {
+        appState.setPanelVisible(false)
+
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.12
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            guard let self, self.panel.alphaValue == 0 else { return }
-            self.panel.orderOut(nil)
-            self.panel.alphaValue = 1
+            // The completion runs on the main thread, but is not statically
+            // known to; assumeIsolated keeps the alpha check synchronous.
+            MainActor.assumeIsolated {
+                guard let self, self.panel.alphaValue == 0 else { return }
+                self.panel.orderOut(nil)
+                self.panel.alphaValue = 1
+            }
         })
 
         if let monitor = eventMonitor {
@@ -136,11 +145,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func startIconUpdates() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.iconAnimator.setAwake(self.appState.isActive)
             }
         }
+        timer.tolerance = 0.2
     }
 }

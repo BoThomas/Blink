@@ -7,24 +7,6 @@ struct ResolvedProcess {
 }
 
 enum ProcessResolver {
-    // MARK: - Process Details
-
-    static func resolve(pid: Int) async -> ResolvedProcess? {
-        async let argsResult = Shell.run("/bin/ps", arguments: ["-p", "\(pid)", "-o", "args="])
-        async let cwdResult = Shell.run("/usr/sbin/lsof", arguments: ["-d", "cwd", "-a", "-p", "\(pid)", "-Fn"])
-
-        guard let args = await argsResult?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !args.isEmpty else { return nil }
-
-        let cwd = await parseCWD(cwdResult ?? "")
-
-        return ResolvedProcess(
-            pid: pid,
-            arguments: args,
-            workingDirectory: cwd
-        )
-    }
-
     // MARK: - Real argv
 
     struct LaunchInfo {
