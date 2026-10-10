@@ -29,11 +29,19 @@ dependencies.
   notarization**. Don't try to make `Scripts/release.sh` run end-to-end; it
   intentionally refuses to ship anything that isn't Developer ID signed, and
   that gate can't be satisfied on this machine.
-- Release artifacts are **ad-hoc signed** (`CODE_SIGN_IDENTITY=-`). That is a
-  deliberate decision, not a gap: the sole user of this fork is its author.
-- Consequence for consumers: Gatekeeper blocks the first launch. Either
-  right-click → Open, use System Settings → Privacy & Security → "Allow
-  Anyway", or `xattr -cr Blink.app`. Mention this when a release affects it.
+- Release artifacts are signed with the **self-signed `now Developer` login-
+  keychain identity** — the same certificate v1.3.0 shipped with:
+  `codesign --force --sign "now Developer" build/Blink.app`
+- ⚠️ Do **not** ship anything built with `CODE_SIGNING_ALLOWED=NO`. That flag
+  leaves the bundle half-sealed: `codesign -dvv` happily says "Signature=
+  adhoc", but `codesign --verify --deep --strict` fails with "code has no
+  resources but signature indicates they must be present", and Gatekeeper
+  shows the hard **"damaged"** dialog that has no Allow Anyway button.
+  Always finish with a `codesign --verify --deep --strict` gate before
+  building the DMG.
+- Consequence for consumers: Gatekeeper still blocks the first launch
+  (untrusted chain). Right-click → Open, System Settings → Privacy &
+  Security → "Allow Anyway", or `xattr -cr Blink.app` for stubborn cases.
 
 ## Ship flow
 
@@ -44,7 +52,9 @@ dependencies.
    `Blink.xcodeproj/project.pbxproj` (both configurations) so the app's
    About page matches the release tag. (v1.3.0 shipped still claiming 1.2 —
    don't repeat that.)
-3. Release build, ad-hoc signed, then DMG via `Scripts/build-dmg.sh`.
+3. Release build, then hand-sign with `codesign --force --sign "now
+   Developer"` and verify (`codesign --verify --deep --strict` must pass),
+   then DMG via `Scripts/build-dmg.sh`.
 4. `gh release create vX.Y.Z -R BoThomas/Blink --title "Blink X.Y.Z"` with
    the DMG attached as `Blink-vX.Y.Z.dmg`. Tag the fork's main HEAD.
 5. Release notes style: `## What's Changed` with `### Fixed` / `### Added` /
